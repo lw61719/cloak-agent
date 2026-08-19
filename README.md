@@ -69,6 +69,8 @@ cloak-agent-web --port 8080
 
 ## 部署到 Render
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/lw61719/cloak-agent)
+
 项目根目录包含 `Dockerfile` 和 `render.yaml`，使用 CloakBrowser 官方 Docker 镜像，在 Render 新加坡区域运行单个 Web Service。Starter 实例会产生平台费用；浏览器任务也会消耗所配置模型的 API 额度。
 
 1. 将项目提交并推送到 GitHub、GitLab 或 Bitbucket。不要提交 `.env`。
