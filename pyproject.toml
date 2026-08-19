@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cloak-browser-agent"
+version = "0.1.0"
+description = "A controlled browser agent powered by CloakBrowser and the OpenAI Responses API."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "cloakbrowser>=0.5.7,<0.6",
+    "fastapi>=0.115,<1",
+    "openai>=1.99.0,<3",
+    "python-dotenv>=1.0,<2",
+    "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.25,<2",
+]
+geoip = [
+    "geoip2>=4.8,<6",
+    "socksio>=1.0,<2",
+]
+
+[project.scripts]
+cloak-agent = "cloak_agent.cli:main"
+cloak-agent-web = "cloak_agent.web:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cloak_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

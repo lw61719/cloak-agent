@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: cloak-browser-agent
+    runtime: docker
+    region: singapore
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: CLOAK_AGENT_PROVIDER
+        value: deepseek
+      - key: DEEPSEEK_MODEL
+        value: deepseek-v4-flash
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: CLOAK_AGENT_ACCESS_USERNAME
+        value: cloak
+      - key: CLOAK_AGENT_ACCESS_PASSWORD
+        sync: false
