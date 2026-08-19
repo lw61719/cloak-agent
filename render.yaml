@@ -7,7 +7,6 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
     autoDeployTrigger: commit
-    maxShutdownDelaySeconds: 60
     envVars:
       - key: CLOAK_AGENT_PROVIDER
         value: deepseek
