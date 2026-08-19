@@ -71,7 +71,7 @@ cloak-agent-web --port 8080
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/lw61719/cloak-agent)
 
-项目根目录包含 `Dockerfile` 和 `render.yaml`，使用 CloakBrowser 官方 Docker 镜像，在 Render 新加坡区域运行单个 Web Service。Starter 实例会产生平台费用；浏览器任务也会消耗所配置模型的 API 额度。
+项目根目录包含 `Dockerfile` 和 `render.yaml`，使用 CloakBrowser 官方 Docker 镜像，在 Render 新加坡区域运行单个 Free Web Service。服务器没有固定月费；浏览器任务仍会消耗所配置模型的 API 额度。免费实例闲置 15 分钟后会休眠，下次访问通常需要约一分钟唤醒，休眠、重新部署或重启都会清空内存中的任务历史。
 
 1. 将项目提交并推送到 GitHub、GitLab 或 Bitbucket。不要提交 `.env`。
 2. 在 Render 控制台选择 **New → Blueprint**，连接代码仓库并部署根目录的 `render.yaml`。
