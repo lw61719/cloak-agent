@@ -88,3 +88,25 @@ async def test_screenshots_are_blocked_after_sensitive_input() -> None:
 
     with pytest.raises(SafetyError, match="disabled after sensitive data"):
         await tools.screenshot("sensitive.png")
+
+
+@pytest.mark.asyncio
+async def test_preview_screenshot_uses_viewport_only(tmp_path) -> None:
+    calls = []
+
+    class FakePage:
+        url = "https://example.com"
+
+        async def screenshot(self, **kwargs) -> None:
+            calls.append(kwargs)
+
+    tools = CloakBrowserTools(
+        AgentConfig(screenshot_dir=tmp_path),
+        SafetyPolicy(),
+    )
+    tools.page = FakePage()
+
+    result = await tools.capture_preview("preview.png")
+
+    assert result["ok"] is True
+    assert calls[0]["full_page"] is False

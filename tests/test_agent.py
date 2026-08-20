@@ -29,6 +29,9 @@ class FakeBrowserTools:
             "url": "https://example.com",
         }
 
+    async def capture_preview(self, filename):
+        return await self.screenshot(filename)
+
 
 class FakeResponses:
     def __init__(self, responses):

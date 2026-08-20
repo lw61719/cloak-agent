@@ -11,6 +11,7 @@ const state = {
   history: [],
   screenshotKey: "",
   approvalId: null,
+  pollFailures: 0,
 };
 
 const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
@@ -156,6 +157,7 @@ function resetRunView() {
   state.lastSequence = 0;
   state.screenshotKey = "";
   state.approvalId = null;
+  state.pollFailures = 0;
 }
 
 function renderScreenshots(screenshots = []) {
@@ -220,15 +222,37 @@ function showRun(run) {
 
 async function pollRun() {
   if (!state.runId) return;
+  const runId = state.runId;
   try {
-    const response = await fetch(`/api/runs/${state.runId}?after=${state.lastSequence}`);
-    if (!response.ok) throw new Error("无法读取任务状态");
+    const response = await fetch(`/api/runs/${runId}?after=${state.lastSequence}`);
+    if (!response.ok) {
+      const error = new Error(
+        response.status === 404 ? "服务已重启，当前任务状态已经丢失" : "暂时无法读取任务状态"
+      );
+      error.permanent = [401, 404].includes(response.status);
+      throw error;
+    }
     const run = await response.json();
+    if (state.runId !== runId) return;
+    if (state.pollFailures > 0) {
+      showError();
+      setSystem(true, "本地服务已连接");
+    }
+    state.pollFailures = 0;
     showRun(run);
     if (["queued", "running", "waiting_approval"].includes(run.status)) state.pollTimer = setTimeout(pollRun, 800);
   } catch (error) {
-    showError(error.message);
-    setRunStatus("failed");
+    if (state.runId !== runId) return;
+    if (error.permanent) {
+      showError(error.message);
+      setRunStatus("failed");
+      return;
+    }
+    state.pollFailures += 1;
+    showError(`连接暂时中断，正在重试（${state.pollFailures}）`);
+    setSystem(false, "正在重新连接服务");
+    const delay = Math.min(5_000, 1_000 * state.pollFailures);
+    state.pollTimer = setTimeout(pollRun, delay);
   }
 }
 

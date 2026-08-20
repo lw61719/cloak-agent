@@ -318,7 +318,7 @@ class BrowserAgent:
                         screenshot = result
                     elif self.capture_screenshots and tool_call.name in AUTO_SCREENSHOT_TOOLS:
                         try:
-                            screenshot = await self.browser_tools.screenshot(
+                            screenshot = await self.browser_tools.capture_preview(
                                 f"step-{step:02d}-{tool_call.name}.png"
                             )
                         except Exception as exc:

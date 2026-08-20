@@ -205,6 +205,14 @@ class CloakBrowserTools:
         return await self.inspect_page(max_chars=self.config.page_text_limit)
 
     async def screenshot(self, filename: str) -> dict[str, Any]:
+        return await self._capture_screenshot(filename, full_page=True)
+
+    async def capture_preview(self, filename: str) -> dict[str, Any]:
+        return await self._capture_screenshot(filename, full_page=False)
+
+    async def _capture_screenshot(
+        self, filename: str, *, full_page: bool
+    ) -> dict[str, Any]:
         self._require_page()
         if self._sensitive_input_used:
             raise SafetyError(
@@ -220,7 +228,7 @@ class CloakBrowserTools:
         path = (directory / safe_name).resolve()
         if path.parent != directory:
             raise SafetyError("Screenshot path must stay inside the artifact directory")
-        await self.page.screenshot(path=str(path), full_page=True)
+        await self.page.screenshot(path=str(path), full_page=full_page)
         return {"ok": True, "path": str(path), "url": self.page.url}
 
     async def _collect_elements(self) -> list[dict[str, Any]]:

@@ -30,10 +30,10 @@ def test_web_home_and_assets_load() -> None:
     assert "Agent 任务" in response.text
     assert 'id="task"' in response.text
     assert 'id="maxSteps"' in response.text
-    assert 'href="/static/styles.css?v=0.2.1"' in response.text
-    assert 'src="/static/app.js?v=0.2.1"' in response.text
-    styles = client.get("/static/styles.css?v=0.2.1")
-    script = client.get("/static/app.js?v=0.2.1")
+    assert 'href="/static/styles.css?v=0.2.2"' in response.text
+    assert 'src="/static/app.js?v=0.2.2"' in response.text
+    styles = client.get("/static/styles.css?v=0.2.2")
+    script = client.get("/static/app.js?v=0.2.2")
     assert styles.status_code == 200
     assert script.status_code == 200
     assert styles.headers["cache-control"] == "no-cache"
