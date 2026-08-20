@@ -3,6 +3,7 @@ const $ = (selector) => document.querySelector(selector);
 const state = {
   runId: null,
   currentUrl: "",
+  mode: "extract",
   status: "idle",
   lastSequence: 0,
   pollTimer: null,
@@ -46,6 +47,22 @@ function setSystem(online, text) {
 
 function showError(message = "") {
   $("#formError").textContent = message;
+}
+
+function setMode(mode) {
+  state.mode = mode === "agent" ? "agent" : "extract";
+  for (const button of document.querySelectorAll("[data-mode]")) {
+    const active = button.dataset.mode === state.mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  const agentMode = state.mode === "agent";
+  $("#agentFields").classList.toggle("hidden", !agentMode);
+  $("#extractPreset").classList.toggle("hidden", agentMode);
+  $("#task").required = agentMode;
+  $("#urlLabel").textContent = agentMode ? "起始网址" : "网站 URL";
+  $("#runButton span").textContent = agentMode ? "运行 Agent" : "开始解析";
+  showError();
 }
 
 function setRunStatus(status) {
@@ -200,9 +217,10 @@ function renderHistory() {
     const urlCopy = displayUrl(run.url);
     const host = document.createElement("b");
     host.textContent = urlCopy.host;
-    const path = document.createElement("span");
-    path.textContent = urlCopy.path;
-    copy.append(host, path);
+    const task = document.createElement("span");
+    task.className = "history-task";
+    task.textContent = run.mode === "agent" ? (run.task || "Agent 任务") : "快速解析";
+    copy.append(host, task);
     const status = document.createElement("span");
     status.className = `history-status ${run.status}`;
     status.textContent = statusLabels[run.status] || run.status;
@@ -220,7 +238,7 @@ function renderHistory() {
     actions.className = "history-actions";
     actions.append(
       makeButton("查看", "history-view", () => viewHistoricalRun(run.id)),
-      makeButton("再次使用", "", () => reuseUrl(run.url)),
+      makeButton("再次使用", "", () => reuseRun(run)),
     );
     const source = document.createElement("a");
     source.href = run.url;
@@ -252,7 +270,7 @@ async function viewHistoricalRun(runId) {
     const run = await response.json();
     resetRunView();
     state.runId = run.id;
-    $("#url").value = run.url;
+    restoreRunForm(run);
     showRun(run);
     $("#historyDialog").close();
     $(".monitor").scrollIntoView({ behavior: reduceMotion.matches ? "auto" : "smooth", block: "start" });
@@ -263,8 +281,15 @@ async function viewHistoricalRun(runId) {
   }
 }
 
-function reuseUrl(url) {
-  $("#url").value = url;
+function restoreRunForm(run) {
+  setMode(run.mode || "extract");
+  $("#url").value = run.url || "";
+  $("#task").value = run.mode === "agent" ? (run.task || "") : "";
+  $("#maxSteps").value = String(run.max_steps || 20);
+}
+
+function reuseRun(run) {
+  restoreRunForm(run);
   $("#historyDialog").close();
   $("#url").focus();
   $("#url").select();
@@ -294,8 +319,24 @@ function exportMarkdown() {
 $("#runForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   showError();
+  const payload = { mode: state.mode, url: $("#url").value.trim() };
+  if (state.mode === "agent") {
+    const task = $("#task").value.trim();
+    if (!task) {
+      showError("请输入 Agent 任务");
+      $("#task").focus();
+      return;
+    }
+    const maxSteps = Number($("#maxSteps").value);
+    if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 60) {
+      showError("最大步骤必须是 1 到 60 之间的整数");
+      $("#maxSteps").focus();
+      return;
+    }
+    payload.task = task;
+    payload.max_steps = maxSteps;
+  }
   resetRunView();
-  const payload = { url: $("#url").value.trim() };
   state.currentUrl = payload.url;
 
   try {
@@ -346,6 +387,10 @@ $("#sampleButton").addEventListener("click", () => {
   $("#url").focus();
 });
 
+for (const button of document.querySelectorAll("[data-mode]")) {
+  button.addEventListener("click", () => setMode(button.dataset.mode));
+}
+
 $("#historyButton").addEventListener("click", async () => {
   await loadHistory();
   $("#historyDialog").showModal();
@@ -372,4 +417,5 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+setMode("extract");
 Promise.all([loadConfig(), loadHistory()]);
