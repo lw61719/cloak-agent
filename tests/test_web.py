@@ -26,8 +26,14 @@ def test_web_home_and_assets_load() -> None:
     assert "Agent 任务" in response.text
     assert 'id="task"' in response.text
     assert 'id="maxSteps"' in response.text
-    assert client.get("/static/styles.css").status_code == 200
-    assert client.get("/static/app.js").status_code == 200
+    assert 'href="/static/styles.css?v=0.2.0"' in response.text
+    assert 'src="/static/app.js?v=0.2.0"' in response.text
+    styles = client.get("/static/styles.css?v=0.2.0")
+    script = client.get("/static/app.js?v=0.2.0")
+    assert styles.status_code == 200
+    assert script.status_code == 200
+    assert styles.headers["cache-control"] == "no-cache"
+    assert script.headers["cache-control"] == "no-cache"
 
 
 def test_health_check_does_not_require_authentication(monkeypatch) -> None:

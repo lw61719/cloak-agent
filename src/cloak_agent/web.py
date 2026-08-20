@@ -336,6 +336,8 @@ def create_app() -> FastAPI:
         )
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @application.get("/healthz", include_in_schema=False)
