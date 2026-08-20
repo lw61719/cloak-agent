@@ -29,7 +29,7 @@ from .trace import TraceLogger
 
 
 STATIC_DIR = Path(__file__).with_name("static")
-ACTIVE_STATUSES = {"queued", "running"}
+ACTIVE_STATUSES = {"queued", "running", "waiting_approval"}
 
 
 class RunRequest(BaseModel):
@@ -63,6 +63,11 @@ class RunRequest(BaseModel):
         return self
 
 
+class ApprovalRequest(BaseModel):
+    approval_id: str = Field(min_length=1, max_length=64)
+    approved: bool
+
+
 @dataclass(slots=True)
 class WebRun:
     id: str
@@ -73,6 +78,7 @@ class WebRun:
     task: str | None = None
     max_steps: int = 20
     execution_task: str = field(default="", repr=False)
+    queue_position: int | None = None
     status: str = "queued"
     result: str | None = None
     error: str | None = None
@@ -80,10 +86,14 @@ class WebRun:
     started_at: str | None = None
     finished_at: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
+    event_sequence: int = field(default=0, repr=False)
     worker: asyncio.Task[None] | None = field(default=None, repr=False)
+    pending_approval: dict[str, Any] | None = field(default=None, repr=False)
+    approval_future: asyncio.Future[bool] | None = field(default=None, repr=False)
 
     def push_event(self, record: dict[str, Any]) -> None:
-        event = {**record, "sequence": len(self.events) + 1}
+        self.event_sequence += 1
+        event = {**record, "sequence": self.event_sequence}
         self.events.append(event)
         if len(self.events) > 250:
             self.events = self.events[-250:]
@@ -95,6 +105,7 @@ class WebRun:
             "mode": self.mode,
             "task": self.task,
             "max_steps": self.max_steps,
+            "queue_position": self.queue_position,
             "provider": self.provider,
             "model": self.model,
             "status": self.status,
@@ -103,17 +114,56 @@ class WebRun:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "approval": self.pending_approval,
+            "screenshots": [
+                {
+                    "filename": event["filename"],
+                    "step": event.get("step"),
+                    "url": event.get("url"),
+                    "timestamp": event.get("timestamp"),
+                    "src": f"/api/runs/{self.id}/screenshots/{event['filename']}",
+                }
+                for event in self.events
+                if event.get("event") == "screenshot_captured"
+                and event.get("filename")
+            ],
             "events": [event for event in self.events if event["sequence"] > after],
         }
+
+    async def request_approval(self, message: str) -> bool:
+        approval_id = uuid4().hex[:12]
+        self.pending_approval = {
+            "id": approval_id,
+            "message": message,
+            "requested_at": _now(),
+        }
+        self.status = "waiting_approval"
+        self.push_event(
+            {
+                "timestamp": _now(),
+                "event": "approval_required",
+                "approval_id": approval_id,
+                "message": message,
+            }
+        )
+        self.approval_future = asyncio.get_running_loop().create_future()
+        try:
+            return await self.approval_future
+        finally:
+            self.pending_approval = None
+            self.approval_future = None
+            if self.status == "waiting_approval":
+                self.status = "running"
 
 
 class RunManager:
     def __init__(self) -> None:
         self.runs: dict[str, WebRun] = {}
+        self._queue: list[str] = []
+        self._active_run_id: str | None = None
+        self._queue_condition = asyncio.Condition()
 
     def start(self, request: RunRequest) -> WebRun:
-        if any(run.status in ACTIVE_STATUSES for run in self.runs.values()):
-            raise RuntimeError("Another browser task is already running")
         provider = configured_web_provider()
         model = os.getenv(
             f"{provider.value.upper()}_MODEL", DEFAULT_MODELS[provider]
@@ -136,7 +186,9 @@ class RunManager:
         )
         self._trim_history()
         self.runs[run.id] = run
-        run.worker = asyncio.create_task(self._execute(run, request))
+        self._queue.append(run.id)
+        self._update_queue_positions()
+        run.worker = asyncio.create_task(self._wait_and_execute(run, request))
         return run
 
     def recent(self) -> list[dict[str, Any]]:
@@ -147,6 +199,7 @@ class RunManager:
                 "mode": run.mode,
                 "task": run.task,
                 "max_steps": run.max_steps,
+                "queue_position": run.queue_position,
                 "provider": run.provider,
                 "model": run.model,
                 "status": run.status,
@@ -184,6 +237,69 @@ class RunManager:
                 pass
         return run
 
+    def resolve_approval(
+        self, run_id: str, approval_id: str, approved: bool
+    ) -> WebRun:
+        run = self.get(run_id)
+        pending = run.pending_approval
+        future = run.approval_future
+        if (
+            run.status != "waiting_approval"
+            or pending is None
+            or pending.get("id") != approval_id
+            or future is None
+            or future.done()
+        ):
+            raise RuntimeError("Approval request is no longer pending")
+        run.status = "running"
+        run.pending_approval = None
+        run.push_event(
+            {
+                "timestamp": _now(),
+                "event": "approval_resolved",
+                "approval_id": approval_id,
+                "approved": approved,
+            }
+        )
+        future.set_result(approved)
+        return run
+
+    async def _wait_and_execute(self, run: WebRun, request: RunRequest) -> None:
+        try:
+            async with self._queue_condition:
+                await self._queue_condition.wait_for(
+                    lambda: bool(self._queue)
+                    and self._queue[0] == run.id
+                    and self._active_run_id is None
+                )
+                self._queue.pop(0)
+                self._active_run_id = run.id
+                run.queue_position = None
+                self._update_queue_positions()
+            await self._execute(run, request)
+        except asyncio.CancelledError:
+            if run.status == "queued":
+                run.status = "cancelled"
+                run.error = "Task cancelled by user"
+                run.finished_at = _now()
+                run.push_event(
+                    {
+                        "timestamp": _now(),
+                        "event": "web_run_finished",
+                        "status": run.status,
+                    }
+                )
+            raise
+        finally:
+            async with self._queue_condition:
+                if run.id in self._queue:
+                    self._queue.remove(run.id)
+                if self._active_run_id == run.id:
+                    self._active_run_id = None
+                run.queue_position = None
+                self._update_queue_positions()
+                self._queue_condition.notify_all()
+
     async def _execute(self, run: WebRun, request: RunRequest) -> None:
         run.status = "running"
         run.started_at = _now()
@@ -192,7 +308,8 @@ class RunManager:
         policy = SafetyPolicy(
             allowed_domains=config.allowed_domains,
             allow_private_network=False,
-            approval_mode=ApprovalMode.DENY,
+            approval_mode=ApprovalMode.ASK,
+            approval_callback=run.request_approval,
         )
         client = None
         try:
@@ -206,6 +323,7 @@ class RunManager:
                     provider=config.provider,
                     max_steps=config.max_steps,
                     trace=trace,
+                    capture_screenshots=True,
                 )
                 run.result = await agent.run(run.execution_task)
             run.status = "completed"
@@ -237,6 +355,12 @@ class RunManager:
         removable = [run_id for run_id, run in self.runs.items() if run.status not in ACTIVE_STATUSES]
         for run_id in removable[: len(self.runs) - 19]:
             self.runs.pop(run_id, None)
+
+    def _update_queue_positions(self) -> None:
+        for position, run_id in enumerate(self._queue, start=1):
+            run = self.runs.get(run_id)
+            if run is not None:
+                run.queue_position = position
 
 
 def _now() -> str:
@@ -281,7 +405,7 @@ def _build_web_agent_config(run: WebRun, request: RunRequest) -> AgentConfig:
         humanize=True,
         proxy=os.getenv("CLOAK_AGENT_PROXY"),
         allowed_domains=(_site_domain(request.url),),
-        approval_mode=ApprovalMode.DENY,
+        approval_mode=ApprovalMode.ASK,
         trace_path=Path("logs") / f"web-{run.id}.jsonl",
         screenshot_dir=Path("artifacts") / run.id,
     )
@@ -305,7 +429,7 @@ def create_app() -> FastAPI:
     load_environment()
     application = FastAPI(
         title="Cloak Browser Agent",
-        version="0.1.0",
+        version="0.2.0",
         docs_url="/api/docs",
         redoc_url=None,
     )
@@ -370,7 +494,10 @@ def create_app() -> FastAPI:
             ),
             "providers": providers,
             "fixed_prompt": build_fixed_task("{URL}"),
-            "safety": "Web runs block private networks and consequential actions by default.",
+            "safety": (
+                "Web runs block private networks and require explicit approval for "
+                "consequential actions."
+            ),
         }
 
     @application.post("/api/runs", status_code=202)
@@ -403,6 +530,38 @@ def create_app() -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return run.public()
+
+    @application.post("/api/runs/{run_id}/approval")
+    async def resolve_run_approval(
+        run_id: str, request: ApprovalRequest
+    ) -> dict[str, Any]:
+        try:
+            run = manager.resolve_approval(
+                run_id, request.approval_id, request.approved
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return run.public()
+
+    @application.get(
+        "/api/runs/{run_id}/screenshots/{filename}",
+        response_class=FileResponse,
+        include_in_schema=False,
+    )
+    async def get_run_screenshot(run_id: str, filename: str) -> FileResponse:
+        try:
+            manager.get(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if filename != Path(filename).name or not filename.lower().endswith(".png"):
+            raise HTTPException(status_code=404, detail="Screenshot not found")
+        directory = (Path("artifacts") / run_id).resolve()
+        screenshot = (directory / filename).resolve()
+        if screenshot.parent != directory or not screenshot.is_file():
+            raise HTTPException(status_code=404, detail="Screenshot not found")
+        return FileResponse(screenshot, media_type="image/png")
 
     return application
 

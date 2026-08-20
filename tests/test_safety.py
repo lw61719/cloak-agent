@@ -1,5 +1,7 @@
 import pytest
 
+from cloak_agent.browser import CloakBrowserTools
+from cloak_agent.config import AgentConfig
 from cloak_agent.safety import ApprovalMode, SafetyError, SafetyPolicy
 
 
@@ -44,3 +46,45 @@ def test_sensitive_input_uses_callback() -> None:
     )
     policy.authorize_input("Account password", "password")
     assert prompts and "sensitive field" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_async_web_approval_callback_is_awaited() -> None:
+    prompts: list[str] = []
+
+    async def approve(message: str) -> bool:
+        prompts.append(message)
+        return True
+
+    policy = SafetyPolicy(
+        approval_mode=ApprovalMode.ASK,
+        approval_callback=approve,
+    )
+
+    await policy.authorize_click_async("Pay now")
+
+    assert prompts and "consequential control" in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_async_web_approval_can_be_denied() -> None:
+    async def deny(message: str) -> bool:
+        return False
+
+    policy = SafetyPolicy(
+        approval_mode=ApprovalMode.ASK,
+        approval_callback=deny,
+    )
+
+    with pytest.raises(SafetyError, match="User did not approve"):
+        await policy.authorize_input_async("Account password", "password")
+
+
+@pytest.mark.asyncio
+async def test_screenshots_are_blocked_after_sensitive_input() -> None:
+    tools = CloakBrowserTools(AgentConfig(), SafetyPolicy())
+    tools.page = object()
+    tools._sensitive_input_used = True
+
+    with pytest.raises(SafetyError, match="disabled after sensitive data"):
+        await tools.screenshot("sensitive.png")

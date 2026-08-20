@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import inspect
 import ipaddress
 import sys
-from typing import Callable
+from typing import Awaitable, Callable
 from urllib.parse import urlparse
 
 
@@ -78,7 +79,7 @@ class SafetyPolicy:
     allowed_domains: tuple[str, ...] = ()
     allow_private_network: bool = False
     approval_mode: ApprovalMode = ApprovalMode.ASK
-    approval_callback: Callable[[str], bool] | None = None
+    approval_callback: Callable[[str], bool | Awaitable[bool]] | None = None
 
     def validate_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -105,14 +106,31 @@ class SafetyPolicy:
         if any(term in details for term in RISKY_ACTION_TERMS):
             self._require_approval(f"Click potentially consequential control: {label!r}")
 
+    async def authorize_click_async(self, label: str, href: str | None = None) -> None:
+        details = " ".join(part for part in (label, href or "") if part).lower()
+        if any(term in details for term in RISKY_ACTION_TERMS):
+            await self._require_approval_async(
+                f"Click potentially consequential control: {label!r}"
+            )
+
     def authorize_input(self, label: str, input_type: str) -> None:
-        details = f"{label} {input_type}".lower()
-        if input_type.lower() in SENSITIVE_INPUT_TYPES or any(
-            term in details for term in SENSITIVE_FIELD_TERMS
-        ):
+        if self.is_sensitive_input(label, input_type):
             self._require_approval(
                 f"Enter data into a sensitive field: {label!r} ({input_type or 'text'})"
             )
+
+    async def authorize_input_async(self, label: str, input_type: str) -> None:
+        if self.is_sensitive_input(label, input_type):
+            await self._require_approval_async(
+                f"Enter data into a sensitive field: {label!r} ({input_type or 'text'})"
+            )
+
+    @staticmethod
+    def is_sensitive_input(label: str, input_type: str) -> bool:
+        details = f"{label} {input_type}".lower()
+        return input_type.lower() in SENSITIVE_INPUT_TYPES or any(
+            term in details for term in SENSITIVE_FIELD_TERMS
+        )
 
     def _require_approval(self, message: str) -> None:
         if self.approval_mode is ApprovalMode.ALLOW:
@@ -121,6 +139,18 @@ class SafetyPolicy:
             raise SafetyError(f"Approval denied by policy. {message}")
         callback = self.approval_callback or terminal_approval
         if not callback(message):
+            raise SafetyError(f"User did not approve. {message}")
+
+    async def _require_approval_async(self, message: str) -> None:
+        if self.approval_mode is ApprovalMode.ALLOW:
+            return
+        if self.approval_mode is ApprovalMode.DENY:
+            raise SafetyError(f"Approval denied by policy. {message}")
+        callback = self.approval_callback or terminal_approval
+        decision = callback(message)
+        if inspect.isawaitable(decision):
+            decision = await decision
+        if not decision:
             raise SafetyError(f"User did not approve. {message}")
 
     @staticmethod

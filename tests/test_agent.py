@@ -9,15 +9,25 @@ from cloak_agent.agent import (
     tool_schemas_for_provider,
 )
 from cloak_agent.config import Provider
+from cloak_agent.trace import TraceLogger
 
 
 class FakeBrowserTools:
     def __init__(self) -> None:
         self.calls = []
+        self.screenshots = []
 
     async def call(self, name, arguments):
         self.calls.append((name, arguments))
         return {"ok": True, "url": arguments.get("url", "https://example.com")}
+
+    async def screenshot(self, filename):
+        self.screenshots.append(filename)
+        return {
+            "ok": True,
+            "path": f"artifacts/{filename}",
+            "url": "https://example.com",
+        }
 
 
 class FakeResponses:
@@ -115,3 +125,27 @@ async def test_parallel_browser_calls_only_execute_first() -> None:
     outputs = responses.requests[1]["input"][-2:]
     assert outputs[1]["call_id"] == "call_2"
     assert "parallel_browser_action_rejected" in outputs[1]["output"]
+
+
+@pytest.mark.asyncio
+async def test_web_agent_captures_screenshot_after_browser_action() -> None:
+    responses = FakeResponses(
+        [fake_response(tool_call()), fake_response(text="Finished safely.")]
+    )
+    events = []
+    tools = FakeBrowserTools()
+    agent = BrowserAgent(
+        SimpleNamespace(responses=responses),
+        tools,
+        model="test-model",
+        max_steps=2,
+        trace=TraceLogger(None, event_sink=events.append),
+        capture_screenshots=True,
+    )
+
+    assert await agent.run("Browse") == "Finished safely."
+    assert tools.screenshots == ["step-01-navigate.png"]
+    screenshot_event = next(
+        event for event in events if event["event"] == "screenshot_captured"
+    )
+    assert screenshot_event["filename"] == "step-01-navigate.png"

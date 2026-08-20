@@ -1,3 +1,6 @@
+import asyncio
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -12,6 +15,7 @@ from cloak_agent.web import (
     app,
     build_agent_task,
     build_fixed_task,
+    manager as web_manager,
 )
 
 
@@ -26,10 +30,10 @@ def test_web_home_and_assets_load() -> None:
     assert "Agent 任务" in response.text
     assert 'id="task"' in response.text
     assert 'id="maxSteps"' in response.text
-    assert 'href="/static/styles.css?v=0.2.0"' in response.text
-    assert 'src="/static/app.js?v=0.2.0"' in response.text
-    styles = client.get("/static/styles.css?v=0.2.0")
-    script = client.get("/static/app.js?v=0.2.0")
+    assert 'href="/static/styles.css?v=0.2.1"' in response.text
+    assert 'src="/static/app.js?v=0.2.1"' in response.text
+    styles = client.get("/static/styles.css?v=0.2.1")
+    script = client.get("/static/app.js?v=0.2.1")
     assert styles.status_code == 200
     assert script.status_code == 200
     assert styles.headers["cache-control"] == "no-cache"
@@ -188,7 +192,8 @@ def test_agent_web_mode_remains_domain_restricted() -> None:
     assert config.max_steps == 12
     assert config.headless is True
     assert config.humanize is True
-    assert config.approval_mode is ApprovalMode.DENY
+    assert config.approval_mode is ApprovalMode.ASK
+    assert config.allow_private_network is False
 
 
 def test_site_domain_handles_compound_public_suffix() -> None:
@@ -234,3 +239,126 @@ def test_run_history_api_has_no_secret_configuration() -> None:
     assert response.status_code == 200
     assert "runs" in response.json()
     assert "api_key" not in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_manager_executes_queued_tasks_in_fifo_order(monkeypatch) -> None:
+    manager = RunManager()
+    started: asyncio.Queue[str] = asyncio.Queue()
+    gates: dict[str, asyncio.Event] = {}
+
+    async def controlled_execution(run: WebRun, request: RunRequest) -> None:
+        run.status = "running"
+        gate = asyncio.Event()
+        gates[run.id] = gate
+        started.put_nowait(run.id)
+        await gate.wait()
+        run.status = "completed"
+
+    monkeypatch.setattr(manager, "_execute", controlled_execution)
+    first = manager.start(RunRequest(url="https://example.com/first"))
+    second = manager.start(RunRequest(url="https://example.com/second"))
+
+    assert await asyncio.wait_for(started.get(), timeout=1) == first.id
+    assert second.status == "queued"
+    assert second.queue_position == 1
+
+    gates[first.id].set()
+    await first.worker
+    assert await asyncio.wait_for(started.get(), timeout=1) == second.id
+    gates[second.id].set()
+    await second.worker
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_web_run_waits_for_and_resolves_approval() -> None:
+    manager = RunManager()
+    run = WebRun(
+        id="approval-run",
+        url="https://example.com",
+        provider="deepseek",
+        model="deepseek-chat",
+        mode="agent",
+        task="执行受保护操作",
+    )
+    manager.runs[run.id] = run
+
+    waiting = asyncio.create_task(run.request_approval("Click publish"))
+    await asyncio.sleep(0)
+    approval_id = run.pending_approval["id"]
+
+    assert run.status == "waiting_approval"
+    assert manager.resolve_approval(run.id, approval_id, True) is run
+    assert await waiting is True
+    assert run.status == "running"
+    assert run.pending_approval is None
+    assert any(event["event"] == "approval_resolved" for event in run.events)
+
+
+def test_web_run_public_data_includes_safe_screenshot_metadata() -> None:
+    run = WebRun(
+        id="screenshot-run",
+        url="https://example.com",
+        provider="deepseek",
+        model="deepseek-chat",
+    )
+    run.push_event(
+        {
+            "timestamp": "2026-08-20T00:00:00+00:00",
+            "event": "screenshot_captured",
+            "step": 2,
+            "filename": "step-02-click.png",
+            "url": "https://example.com/pricing",
+        }
+    )
+
+    screenshot = run.public()["screenshots"][0]
+    assert screenshot["filename"] == "step-02-click.png"
+    assert screenshot["src"].endswith(
+        "/api/runs/screenshot-run/screenshots/step-02-click.png"
+    )
+
+
+def test_screenshot_api_serves_only_known_run_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    run = WebRun(
+        id="served-screenshot",
+        url="https://example.com",
+        provider="deepseek",
+        model="deepseek-chat",
+    )
+    web_manager.runs[run.id] = run
+    screenshot = Path("artifacts") / run.id / "step-01-navigate.png"
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(b"\x89PNG\r\n\x1a\n")
+    try:
+        response = client.get(
+            f"/api/runs/{run.id}/screenshots/{screenshot.name}"
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert client.get(
+            f"/api/runs/{run.id}/screenshots/missing.png"
+        ).status_code == 404
+    finally:
+        web_manager.runs.pop(run.id, None)
+
+
+def test_event_sequences_remain_monotonic_after_history_trimming() -> None:
+    run = WebRun(
+        id="long-run",
+        url="https://example.com",
+        provider="deepseek",
+        model="deepseek-chat",
+    )
+    for index in range(260):
+        run.push_event({"timestamp": str(index), "event": "test_event"})
+
+    assert len(run.events) == 250
+    assert run.events[0]["sequence"] == 11
+    assert run.events[-1]["sequence"] == 260

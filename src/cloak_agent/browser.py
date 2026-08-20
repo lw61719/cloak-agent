@@ -48,6 +48,7 @@ class CloakBrowserTools:
         self.context: Any = None
         self.page: Any = None
         self._elements: dict[str, ElementRef] = {}
+        self._sensitive_input_used = False
 
     async def __aenter__(self) -> "CloakBrowserTools":
         await self.start()
@@ -87,6 +88,7 @@ class CloakBrowserTools:
                 await self.browser.close()
             self.page = self.context = self.browser = None
             self._elements.clear()
+            self._sensitive_input_used = False
 
     async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         handlers = {
@@ -150,7 +152,7 @@ class CloakBrowserTools:
 
     async def click(self, element_id: str) -> dict[str, Any]:
         ref = self._get_element(element_id)
-        self.policy.authorize_click(ref.label, ref.href)
+        await self.policy.authorize_click_async(ref.label, ref.href)
         before = self.page.url
         await ref.locator.click(timeout=10_000)
         await self._settle()
@@ -160,10 +162,13 @@ class CloakBrowserTools:
 
     async def type_text(self, element_id: str, text: str) -> dict[str, Any]:
         ref = self._get_element(element_id)
-        self.policy.authorize_input(ref.label, ref.input_type)
+        sensitive = self.policy.is_sensitive_input(ref.label, ref.input_type)
+        await self.policy.authorize_input_async(ref.label, ref.input_type)
         if len(text) > 4_000:
             raise SafetyError("Refusing to type more than 4,000 characters at once")
         await ref.locator.fill(text, timeout=10_000)
+        if sensitive:
+            self._sensitive_input_used = True
         return {
             "ok": True,
             "url": self.page.url,
@@ -201,6 +206,10 @@ class CloakBrowserTools:
 
     async def screenshot(self, filename: str) -> dict[str, Any]:
         self._require_page()
+        if self._sensitive_input_used:
+            raise SafetyError(
+                "Screenshots are disabled after sensitive data was entered in this session"
+            )
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", filename).strip("._")
         if not safe_name:
             safe_name = datetime.now(timezone.utc).strftime("page-%Y%m%d-%H%M%S.png")

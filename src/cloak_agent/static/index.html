@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <title>Cloak Browser Agent</title>
-    <link rel="stylesheet" href="/static/styles.css?v=0.2.0" />
+    <link rel="stylesheet" href="/static/styles.css?v=0.2.1" />
   </head>
   <body>
     <div class="ambient ambient-a"></div>
@@ -107,7 +107,7 @@
 
           <div class="safety-note">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.4c0 4.7 3.2 8.8 7.5 9.8 4.3-1 7.5-5.1 7.5-9.8V6L12 3Zm0 2.1 5.5 2.2v4.1c0 3.6-2.3 6.8-5.5 7.8-3.2-1-5.5-4.2-5.5-7.8V7.3L12 5.1Z" /></svg>
-            <p><b>安全边界已锁定</b><span>自动限制目标域名，并阻止私网、付款、删除与敏感字段操作。</span></p>
+            <p><b>安全边界已锁定</b><span>自动限制目标域名并阻止私网；危险操作必须由你明确批准。</span></p>
           </div>
 
           <div class="actions">
@@ -133,8 +133,27 @@
             <div class="run-meta">
               <div><span>RUN ID</span><b id="runId">—</b></div>
               <div><span>MODEL</span><b id="runModel">—</b></div>
+              <div><span>MODE / STEPS</span><b id="runMode">—</b></div>
+              <div><span>QUEUE</span><b id="runQueue">—</b></div>
             </div>
+            <div class="run-context">
+              <span>TASK CONTEXT</span>
+              <b id="runTask">—</b>
+              <a id="runUrl" href="#" target="_blank" rel="noopener noreferrer">—</a>
+            </div>
+            <article id="approvalCard" class="approval-card hidden" role="alert">
+              <div class="approval-icon">!</div>
+              <div class="approval-copy"><span>APPROVAL REQUIRED</span><b>Agent 请求执行受保护操作</b><p id="approvalMessage"></p></div>
+              <div class="approval-actions">
+                <button id="denyApprovalButton" type="button">拒绝</button>
+                <button id="approveApprovalButton" type="button">批准一次</button>
+              </div>
+            </article>
             <div id="timeline" class="timeline" aria-live="polite"></div>
+            <section id="screenshotPanel" class="screenshot-panel hidden">
+              <div class="section-label"><span>LIVE CAPTURES</span><b id="screenshotCount">0</b></div>
+              <div id="screenshotGallery" class="screenshot-gallery"></div>
+            </section>
             <article id="resultCard" class="result-card hidden">
               <div class="result-title">
                 <span>FINAL OUTPUT</span>
@@ -169,6 +188,6 @@
         </footer>
       </div>
     </dialog>
-    <script src="/static/app.js?v=0.2.0" defer></script>
+    <script src="/static/app.js?v=0.2.1" defer></script>
   </body>
 </html>

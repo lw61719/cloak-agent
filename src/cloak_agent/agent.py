@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+from pathlib import Path
 from typing import Any
 
 from .browser import CloakBrowserTools, tool_result_json
@@ -21,6 +22,15 @@ Rules:
 - Minimize side effects. Consequential clicks and sensitive fields may require user approval. If a tool returns a safety error, explain what approval or configuration is needed; do not evade the guardrail.
 - Do not claim success until the page state provides evidence. Keep the final answer concise and include the relevant URL and observed result.
 """
+
+AUTO_SCREENSHOT_TOOLS = {
+    "navigate",
+    "click",
+    "select_option",
+    "scroll",
+    "go_back",
+    "wait",
+}
 
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -210,6 +220,7 @@ class BrowserAgent:
         provider: Provider = Provider.OPENAI,
         max_steps: int = 20,
         trace: TraceLogger | None = None,
+        capture_screenshots: bool = False,
     ) -> None:
         self.client = client
         self.browser_tools = browser_tools
@@ -217,6 +228,7 @@ class BrowserAgent:
         self.provider = provider
         self.max_steps = max_steps
         self.trace = trace or TraceLogger(None)
+        self.capture_screenshots = capture_screenshots
 
     async def run(self, task: str) -> str:
         if not task.strip():
@@ -300,6 +312,28 @@ class BrowserAgent:
                     error_type=result.get("error_type"),
                     url=result.get("url"),
                 )
+                if result.get("ok"):
+                    screenshot = None
+                    if tool_call.name == "screenshot" and result.get("path"):
+                        screenshot = result
+                    elif self.capture_screenshots and tool_call.name in AUTO_SCREENSHOT_TOOLS:
+                        try:
+                            screenshot = await self.browser_tools.screenshot(
+                                f"step-{step:02d}-{tool_call.name}.png"
+                            )
+                        except Exception as exc:
+                            self.trace.write(
+                                "screenshot_failed",
+                                step=step,
+                                error=f"{type(exc).__name__}: {exc}",
+                            )
+                    if screenshot and screenshot.get("ok") and screenshot.get("path"):
+                        self.trace.write(
+                            "screenshot_captured",
+                            step=step,
+                            filename=Path(str(screenshot["path"])).name,
+                            url=screenshot.get("url") or result.get("url"),
+                        )
                 input_items.append(
                     {
                         "type": "function_call_output",

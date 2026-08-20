@@ -9,12 +9,15 @@ const state = {
   pollTimer: null,
   config: null,
   history: [],
+  screenshotKey: "",
+  approvalId: null,
 };
 
 const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
 const statusLabels = {
   queued: "等待中",
   running: "运行中",
+  waiting_approval: "待批准",
   completed: "已完成",
   failed: "失败",
   cancelled: "已停止",
@@ -35,6 +38,10 @@ const labels = {
   tool_called: ["执行浏览器动作", ""],
   tool_result: ["浏览器返回结果", ""],
   tool_rejected: ["动作已拦截", "并行动作可能导致页面状态错乱"],
+  approval_required: ["等待你的批准", "受保护操作已暂停"],
+  approval_resolved: ["审批已处理", "Agent 将按照你的选择继续"],
+  screenshot_captured: ["已捕获页面", "运行画面已更新"],
+  screenshot_failed: ["截图失败", "不影响 Agent 继续执行"],
   run_finished: ["Agent 已完成", "已生成最终回答"],
   run_stopped: ["达到步数上限", "任务未在限制内完成"],
   web_run_finished: ["运行结束", ""],
@@ -70,9 +77,9 @@ function setRunStatus(status) {
   const badge = $("#runBadge");
   badge.className = `run-badge ${status}`;
   badge.textContent = status.toUpperCase();
-  const running = ["queued", "running"].includes(status);
-  $("#runButton").disabled = running;
-  $("#cancelButton").disabled = !running;
+  const active = ["queued", "running", "waiting_approval"].includes(status);
+  $("#runButton").disabled = false;
+  $("#cancelButton").disabled = !active;
 }
 
 async function loadConfig() {
@@ -103,6 +110,9 @@ function eventDetail(event) {
     const tools = event.tool_calls?.join(", ");
     return tools ? `计划调用：${tools}` : "准备输出最终回答";
   }
+  if (event.event === "approval_required") return event.message || "等待批准";
+  if (event.event === "approval_resolved") return event.approved ? "已批准一次" : "已拒绝";
+  if (event.event === "screenshot_captured") return `${event.filename || "页面截图"} · step ${event.step || "—"}`;
   if (event.status) return `状态：${event.status}`;
   return labels[event.event]?.[1] || event.event;
 }
@@ -140,7 +150,45 @@ function resetRunView() {
   $("#timeline").replaceChildren();
   $("#resultCard").classList.add("hidden");
   $("#resultText").textContent = "";
+  $("#approvalCard").classList.add("hidden");
+  $("#screenshotPanel").classList.add("hidden");
+  $("#screenshotGallery").replaceChildren();
   state.lastSequence = 0;
+  state.screenshotKey = "";
+  state.approvalId = null;
+}
+
+function renderScreenshots(screenshots = []) {
+  const key = screenshots.map((item) => item.filename).join("|");
+  if (key === state.screenshotKey) return;
+  state.screenshotKey = key;
+  const gallery = $("#screenshotGallery");
+  gallery.replaceChildren();
+  for (const screenshot of screenshots) {
+    const link = document.createElement("a");
+    link.className = "screenshot-item";
+    link.href = screenshot.src;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const image = document.createElement("img");
+    image.src = screenshot.src;
+    image.alt = `Agent 第 ${screenshot.step || "?"} 步页面截图`;
+    image.loading = "lazy";
+    const label = document.createElement("span");
+    label.textContent = `STEP ${screenshot.step || "—"}`;
+    link.append(image, label);
+    gallery.append(link);
+  }
+  $("#screenshotCount").textContent = String(screenshots.length);
+  $("#screenshotPanel").classList.toggle("hidden", screenshots.length === 0);
+}
+
+function renderApproval(approval) {
+  state.approvalId = approval?.id || null;
+  $("#approvalCard").classList.toggle("hidden", !approval);
+  $("#approvalMessage").textContent = approval?.message || "";
+  $("#approveApprovalButton").disabled = !approval;
+  $("#denyApprovalButton").disabled = !approval;
 }
 
 function showRun(run) {
@@ -149,7 +197,16 @@ function showRun(run) {
   $("#activeState").classList.remove("hidden");
   $("#runId").textContent = run.id;
   $("#runModel").textContent = `${run.provider} / ${run.model}`;
+  $("#runMode").textContent = `${run.mode === "agent" ? "Agent 任务" : "快速解析"} / ${run.max_steps} 步`;
+  $("#runQueue").textContent = run.status === "queued" && run.queue_position
+    ? `队列第 ${run.queue_position} 位`
+    : (["running", "waiting_approval"].includes(run.status) ? "正在执行" : "已结束");
+  $("#runTask").textContent = run.mode === "agent" ? (run.task || "Agent 任务") : "快速解析：标题、摘要与关键事实";
+  $("#runUrl").textContent = run.url;
+  $("#runUrl").href = run.url;
   setRunStatus(run.status);
+  renderApproval(run.approval);
+  renderScreenshots(run.screenshots || []);
   for (const event of run.events || []) {
     state.lastSequence = Math.max(state.lastSequence, event.sequence || 0);
     appendEvent(event);
@@ -168,7 +225,7 @@ async function pollRun() {
     if (!response.ok) throw new Error("无法读取任务状态");
     const run = await response.json();
     showRun(run);
-    if (["queued", "running"].includes(run.status)) state.pollTimer = setTimeout(pollRun, 800);
+    if (["queued", "running", "waiting_approval"].includes(run.status)) state.pollTimer = setTimeout(pollRun, 800);
   } catch (error) {
     showError(error.message);
     setRunStatus("failed");
@@ -274,7 +331,7 @@ async function viewHistoricalRun(runId) {
     showRun(run);
     $("#historyDialog").close();
     $(".monitor").scrollIntoView({ behavior: reduceMotion.matches ? "auto" : "smooth", block: "start" });
-    if (["queued", "running"].includes(run.status)) pollRun();
+    if (["queued", "running", "waiting_approval"].includes(run.status)) pollRun();
   } catch (error) {
     showError(error.message);
     $("#historyDialog").close();
@@ -370,6 +427,32 @@ $("#cancelButton").addEventListener("click", async () => {
     showError(error.message);
   }
 });
+
+async function resolveApproval(approved) {
+  if (!state.runId || !state.approvalId) return;
+  const approvalId = state.approvalId;
+  $("#approveApprovalButton").disabled = true;
+  $("#denyApprovalButton").disabled = true;
+  try {
+    const response = await fetch(`/api/runs/${state.runId}/approval`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approval_id: approvalId, approved }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "审批请求已经失效");
+    renderApproval(null);
+    clearTimeout(state.pollTimer);
+    pollRun();
+  } catch (error) {
+    showError(error.message);
+    $("#approveApprovalButton").disabled = false;
+    $("#denyApprovalButton").disabled = false;
+  }
+}
+
+$("#approveApprovalButton").addEventListener("click", () => resolveApproval(true));
+$("#denyApprovalButton").addEventListener("click", () => resolveApproval(false));
 
 $("#copyButton").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("#resultText").textContent);
